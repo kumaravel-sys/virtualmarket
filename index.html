@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>VSE — Indian Market Simulator (Real-looking, Fake Movement)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{--bg:#071427;--card:#0b1b2a;--accent:#06b6d4;--muted:#94a3b8}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,#031224,#02101a);color:#eaf6fb}
+    .wrap{max-width:1240px;margin:16px auto;padding:18px}
+    header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+    .brand{display:flex;gap:12px;align-items:center}
+    .logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(90deg,#06b6d4,#0ea5a4);display:flex;align-items:center;justify-content:center;font-weight:700}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:14px;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.6)}
+    .row{display:flex;gap:12px}
+    .col{flex:1}
+    input,select,button{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    .search-suggestions{position:relative}
+    .suggestions-list{position:absolute;left:0;right:0;z-index:40;background:#08162b;border-radius:8px;max-height:220px;overflow:auto;margin-top:6px;padding:6px;border:1px solid rgba(255,255,255,0.03)}
+    .suggestion{padding:8px;border-radius:6px;cursor:pointer}
+    .suggestion:hover{background:rgba(255,255,255,0.02)}
+    button.primary{background:var(--accent);color:#022;border:none;font-weight:700}
+    .muted{color:var(--muted);font-size:0.9rem}
+    .small{font-size:0.85rem}
+    .watchlist-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);margin-bottom:6px}
+    .hidden{display:none}
+    footer{margin-top:12px;color:var(--muted);font-size:0.9rem}
+    canvas{width:100% !important;height:420px !important}
+    .admin-panel{margin-top:8px;border-top:1px dashed rgba(255,255,255,0.03);padding-top:8px}
+    @media(max-width:980px){.row{flex-direction:column}}
+  </style>
+
+  <!-- Chart.js and Financial plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@3.3.0/dist/chartjs-chart-financial.min.js"></script>
+
+  <!-- Firebase compat (easy single-file usage) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo">VSE</div>
+        <div>
+          <div style="font-size:1.13rem;font-weight:700">VSE — Indian Market Simulator</div>
+          <div class="muted small">Looks & feels like TradingView — simulated realtime movement</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div id="user-info" class="muted small">Not signed in</div>
+        <button id="btn-signin" class="primary">Sign In</button>
+      </div>
+    </header>
+
+    <div class="row">
+      <!-- LEFT: big chart & trade -->
+      <div class="col card" style="min-width:360px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div>
+            <div id="selected-symbol" style="font-weight:700;font-size:1.05rem">—</div>
+            <div id="symbol-sub" class="muted small">Search a stock — autosuggest available</div>
+          </div>
+          <div style="text-align:right">
+            <div class="muted small">Cash balance</div>
+            <div id="cash-balance" style="font-weight:700;font-size:1.05rem">₹ 0.00</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:flex-start">
+          <div style="flex:1;position:relative" class="search-suggestions">
+            <input id="search-input" placeholder="Type TCS, RELIANCE, INFY..." autocomplete="off" />
+            <div id="suggestions" class="suggestions-list hidden"></div>
+          </div>
+          <button id="btn-search">Open</button>
+          <button id="btn-add-watch">+WL</button>
+        </div>
+
+        <canvas id="priceChart"></canvas>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+          <div class="muted small" id="last-price">Last: —</div>
+          <div class="muted small" id="market-status">Market: —</div>
+        </div>
+
+        <hr style="border:none;height:1px;background:rgba(255,255,255,0.04);margin:12px 0">
+
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="trade-type" style="width:110px"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+          <input id="trade-qty" type="number" min="1" value="1" style="width:120px" />
+          <input id="trade-price" placeholder="Limit price (optional)" style="width:160px" />
+          <button id="btn-trade" class="primary">Place Order</button>
+        </div>
+
+        <div class="muted small" style="margin-top:8px">Orders placed when market closed (NSE 09:15–15:30 IST) are stored as <strong>pending</strong> and execute on next open (admin or scheduler).</div>
+      </div>
+
+      <!-- RIGHT: watchlist, top, orders, admin -->
+      <div style="width:380px;min-width:300px">
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-weight:700">Watchlist</div>
+            <div class="muted small">Click to open</div>
+          </div>
+          <div id="watchlist"></div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-weight:700">Top snapshot</div>
+            <button id="btn-refresh-gainers">Refresh</button>
+          </div>
+          <div id="top-gainers" class="muted small">Loading...</div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-weight:700">Orders & Transactions</div>
+            <div class="muted small">Pending executes on next open</div>
+          </div>
+          <div id="orders-list" class="muted small">No orders</div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="font-weight:700">Admin</div>
+            <div id="admin-badge" class="muted small hidden">ADMIN</div>
+          </div>
+          <div class="muted small">Admins are managed via Firestore `admins` collection.</div>
+          <div id="admin-tools" class="admin-panel hidden">
+            <div style="margin-top:8px">
+              <button id="btn-run-pending">Run pending now</button>
+              <button id="btn-list-users">List users</button>
+            </div>
+            <div id="admin-log" class="muted small" style="margin-top:8px"></div>
+            <div id="admin-users" style="margin-top:8px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="muted small">Push to GitHub Pages. For production: move order execution to Cloud Functions and protect secrets.</footer>
+  </div>
+
+<script>
+/* ---------------- CONFIG YOU GAVE (used exactly) ---------------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyDr_yQFo5DGNIBpAfOezVYyMd-wtiDwN9c",
+  authDomain: "myweb-cd0a2.firebaseapp.com",
+  projectId: "myweb-cd0a2",
+  storageBucket: "myweb-cd0a2.firebasestorage.app",
+  messagingSenderId: "896802835911",
+  appId: "1:896802835911:web:4eca4c7c6fb7e516fb5de2"
+};
+
+const COMMON_PASSWORD = "vse2k25";
+const ADMIN_EMAIL = "admin6@vse.com";
+const ADMIN_PASSWORD = "adminvse2k25";
+const TWELVE_API = "c933f15065e54a7b9d8908b084d72de1"; // kept but not used for simulated prices
+/* ----------------------------------------------------------------- */
+
+/* Firebase init (compat) */
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* UI refs */
+const btnSignin = document.getElementById('btn-signin');
+const userInfo = document.getElementById('user-info');
+const searchInput = document.getElementById('search-input');
+const suggestionsEl = document.getElementById('suggestions');
+const btnSearch = document.getElementById('btn-search');
+const btnAddWatch = document.getElementById('btn-add-watch');
+const watchlistDiv = document.getElementById('watchlist');
+const selectedSymbolEl = document.getElementById('selected-symbol');
+const symbolSub = document.getElementById('symbol-sub');
+const lastPriceEl = document.getElementById('last-price');
+const marketStatusEl = document.getElementById('market-status');
+const btnTrade = document.getElementById('btn-trade');
+const tradeQty = document.getElementById('trade-qty');
+const tradePrice = document.getElementById('trade-price');
+const tradeType = document.getElementById('trade-type');
+const cashBalanceEl = document.getElementById('cash-balance');
+const btnRefreshGainers = document.getElementById('btn-refresh-gainers');
+const topGainersEl = document.getElementById('top-gainers');
+const ordersList = document.getElementById('orders-list');
+const adminTools = document.getElementById('admin-tools');
+const btnRunPending = document.getElementById('btn-run-pending');
+const btnListUsers = document.getElementById('btn-list-users');
+const adminLog = document.getElementById('admin-log');
+const adminUsersEl = document.getElementById('admin-users');
+const adminBadge = document.getElementById('admin-badge');
+
+/* Chart */
+const canvasCtx = document.getElementById('priceChart').getContext('2d');
+let chart = null;
+
+/* App state */
+let currentUser = null;
+let selectedSymbol = null;
+let symbolTicker = null; // interval for reading lastPrice and updating chart
+let globalTicker = null; // interval that simulates prices and writes to Firestore (server-side imitation)
+let activeSymbols = new Set();
+
+/* Basic helpers */
+function formatINR(n){ if(n==null) return '—'; return '₹ ' + Number(n).toLocaleString('en-IN', {maximumFractionDigits:2}); }
+function nowIST(){ const d=new Date(); const utc=d.getTime() + (d.getTimezoneOffset()*60000); return new Date(utc + 3600000*5.5); }
+function isMarketOpenIST(dt=null){ const d = dt || nowIST(); const day = d.getDay(); if(day===0||day===6) return false; const hh=d.getHours(), mm=d.getMinutes(); const m = hh*60 + mm; return m >= (9*60 + 15) && m < (15*60 + 30); }
+
+/* ---------------- STOCK UNIVERSE (autosuggest list) ----------------
+   We'll include a robust list of popular NSE tickers and names (short list ~120)
+   This feeds the autosuggest and also used to seed base prices.
+*/
+const STOCKS = [
+  {s:'RELIANCE', n:'Reliance Industries'},
+  {s:'TCS', n:'Tata Consultancy Services'},
+  {s:'INFY', n:'Infosys'},
+  {s:'HDFCBANK', n:'HDFC Bank'},
+  {s:'ICICIBANK', n:'ICICI Bank'},
+  {s:'HINDUNILVR', n:'Hindustan Unilever'},
+  {s:'KOTAKBANK', n:'Kotak Mahindra Bank'},
+  {s:'LT', n:'Larsen & Toubro'},
+  {s:'SBIN', n:'State Bank of India'},
+  {s:'AXISBANK', n:'Axis Bank'},
+  {s:'BHARTIARTL', n:'Bharti Airtel'},
+  {s:'HDFC', n:'HDFC Ltd'},
+  {s:'BAJAJ-AUTO', n:'Bajaj Auto'},
+  {s:'ASIANPAINT', n:'Asian Paints'},
+  {s:'SUNPHARMA', n:'Sun Pharmaceutical'},
+  {s:'TITAN', n:'Titan Company'},
+  {s:'ULTRACEMCO', n:'UltraTech Cement'},
+  {s:'POWERGRID', n:'Power Grid Corporation'},
+  {s:'WIPRO', n:'Wipro'},
+  {s:'NTPC', n:'NTPC Ltd'},
+  {s:'ONGC', n:'ONGC'},
+  {s:'ADANIENT', n:'Adani Enterprises'},
+  {s:'ADANIPORTS', n:'Adani Ports'},
+  {s:'EICHER', n:'Eicher Motors'},
+  {s:'BRITANNIA', n:'Britannia Industries'},
+  {s:'DIVISLAB', n:'Divi\'s Labs'},
+  {s:'M&M', n:'Mahindra & Mahindra'},
+  {s:'BHARATFORG', n:'Bharat Forge'},
+  {s:'GAIL', n:'GAIL India'},
+  {s:'TATAMOTORS', n:'Tata Motors'},
+  {s:'MARUTI', n:'Maruti Suzuki'},
+  {s:'SHREECEM', n:'Shree Cement'},
+  {s:'ONGC', n:'ONGC'},
+  {s:'COALINDIA', n:'Coal India'},
+  {s:'INDUSINDBK', n:'IndusInd Bank'},
+  {s:'BPCL', n:'BPCL'},
+  {s:'IOC', n:'Indian Oil Corp'},
+  {s:'HCLTECH', n:'HCL Technologies'},
+  {s:'BIOCON', n:'Biocon'},
+  {s:'PIDILITIND', n:'Pidilite Industries'},
+  {s:'HEROMOTOCO', n:'Hero MotoCorp'},
+  {s:'TATASTEEL', n:'Tata Steel'},
+  {s:'CIPLA', n:'Cipla'},
+  {s:'LTIM', n:'LTI Mindtree'},
+  {s:'TECHM', n:'Tech Mahindra'},
+  {s:'SIEMENS', n:'Siemens India'},
+  {s:'HAVELLS', n:'Havells India'},
+  {s:'INDIGO', n:'InterGlobe Aviation (IndiGo)'},
+  {s:'NTPC', n:'NTPC'},
+  // ... you can append more tickers as needed
+];
+
+/* ---------- AUTOSUGGEST IMPLEMENTATION ---------- */
+searchInput.addEventListener('input', () => {
+  const v = searchInput.value.trim().toUpperCase();
+  if(!v){ suggestionsEl.classList.add('hidden'); suggestionsEl.innerHTML = ''; return; }
+  const results = STOCKS.filter(item => item.s.includes(v) || item.n.toUpperCase().includes(v)).slice(0,12);
+  if(results.length === 0){ suggestionsEl.classList.add('hidden'); suggestionsEl.innerHTML = ''; return; }
+  suggestionsEl.innerHTML = '';
+  results.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'suggestion';
+    div.innerHTML = `<strong>${r.s}</strong> <span class="muted small"> — ${r.n}</span>`;
+    div.onclick = () => { searchInput.value = r.s; selectSymbol(r.s); suggestionsEl.classList.add('hidden'); };
+    suggestionsEl.appendChild(div);
+  });
+  suggestionsEl.classList.remove('hidden');
+});
+document.addEventListener('click', (e) => { if(!e.target.closest('.search-suggestions')) suggestionsEl.classList.add('hidden'); });
+
+/* ---------- CHART (candlestick + line overlay) ---------- */
+function createChart(){
+  const data = {
+    datasets: [
+      {
+        label: 'Candles',
+        data: [], // candlestick points {x: timestamp, o,h,l,c}
+        type: 'candlestick',
+        borderColor: '#0ea5a4',
+        color: {up: '#00b894', down: '#ff6b6b', unchanged: '#cbd5e1'}
+      },
+      {
+        label: 'Price',
+        data: [], // line data {x: timestamp, y: price}
+        type: 'line',
+        borderColor: '#06b6d4',
+        pointRadius: 0,
+        tension: 0.2,
+      }
+    ]
+  };
+  const cfg = {
+    type: 'candlestick',
+    data,
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'minute', tooltipFormat: 'HH:mm:ss' },
+          ticks: { color: '#9fb0c8' }
+        },
+        y: {
+          ticks: { color: '#9fb0c8' },
+          grid: { color: 'rgba(255,255,255,0.03)' }
+        }
+      },
+      animation: { duration: 200 }
+    }
+  };
+  if(chart) chart.destroy();
+  chart = new Chart(canvasCtx, cfg);
+}
+createChart();
+
+/* Utility: append OHLC point and update */
+function pushOHLC(ts, o,h,l,c){
+  // keep both datasets aligned by timestamp
+  chart.data.datasets[0].data.push({x: ts, o, h, l, c});
+  chart.data.datasets[1].data.push({x: ts, y: c});
+  // cap length
+  if(chart.data.datasets[0].data.length > 240){
+    chart.data.datasets[0].data.shift();
+    chart.data.datasets[1].data.shift();
+  }
+  chart.update('none');
+}
+
+/* ---------------- SYMBOL SEED & SIMULATOR ----------------
+   symbols/{SYMBOL} document shape:
+   { lastPrice: number, volatility: number, history: [ {ts, o,h,l,c} ... ] }
+*/
+function seedBaseForSymbol(symbol){
+  // heuristic base price ranges: big caps high, mid/low lower
+  const big = ['RELIANCE','TCS','INFY','HDFCBANK','ICICIBANK','HINDUNILVR','KOTAKBANK','LT','SBIN','AXISBANK'];
+  const mid = ['BHARTIARTL','ADANIENT','ONGC','POWERGRID','WIPRO','ASIANPAINT','MARUTI','TATAMOTORS','HCLTECH'];
+  if(big.includes(symbol)) return +(1000 + Math.random()*3000).toFixed(2);
+  if(mid.includes(symbol)) return +(200 + Math.random()*1500).toFixed(2);
+  // otherwise small/mid
+  return +(30 + Math.random()*700).toFixed(2);
+}
+
+async function ensureSymbolDoc(symbol){
+  const ref = db.collection('symbols').doc(symbol);
+  const snap = await ref.get();
+  if(!snap.exists){
+    const base = seedBaseForSymbol(symbol);
+    // volatility 0.2% - 1% default
+    const vol = +(0.002 + Math.random()*0.008).toFixed(4);
+    const history = [];
+    const now = Date.now();
+    // seed 120 candlesticks at 15s spacing (quick history)
+    let price = base;
+    for(let i=120; i>0; --i){
+      const ts = now - i*1500;
+      // generate small OHLC from price
+      const o = +(price * (1 + (Math.random()-0.5)*0.004)).toFixed(2);
+      const h = +(o * (1 + Math.random()*0.006)).toFixed(2);
+      const l = +(o * (1 - Math.random()*0.006)).toFixed(2);
+      const c = +(l + Math.random()*(h-l)).toFixed(2);
+      history.push({ts, o,h,l,c});
+      price = c;
+    }
+    const lastPrice = price;
+    await ref.set({ lastPrice, volatility: vol, history });
+  }
+  // mark active for ticking
+  activeSymbols.add(symbol);
+}
+
+/* Tick logic: produce next OHLC and update Firestore
+   This function applies controlled random walk with occasional bursts and mild mean reversion.
+*/
+async function tickSymbol(symbol){
+  const ref = db.collection('symbols').doc(symbol);
+  const snap = await ref.get();
+  if(!snap.exists) return null;
+  const doc = snap.data();
+  let last = doc.lastPrice || seedBaseForSymbol(symbol);
+  const vol = doc.volatility || 0.005;
+  // generate gaussian-ish random
+  const rand = (Math.random() - 0.5) + (Math.random() - 0.5);
+  let pct = rand * vol * (0.6 + Math.random()*1.4);
+  // occasional spike
+  if(Math.random() < 0.012) pct *= (2 + Math.random()*4);
+  // small mean reversion toward simple moving average in doc.history
+  const hist = doc.history || [];
+  let avg = last;
+  if(hist.length > 20) avg = hist.slice(-20).reduce((s,i)=>s+i.c,0)/Math.min(20,hist.length);
+  pct += (avg - last) * 0.00015;
+  // compute new close
+  const newClose = Math.max(0.01, +(last * (1 + pct)).toFixed(2));
+  // construct OHLC for this tick from last price
+  // simulate open ~ last, high/low within tiny ranges
+  const o = +(last * (1 + (Math.random()-0.5)*0.002)).toFixed(2);
+  const h = +(Math.max(o,newClose) * (1 + Math.random()*0.003)).toFixed(2);
+  const l = +(Math.min(o,newClose) * (1 - Math.random()*0.003)).toFixed(2);
+  const c = newClose;
+  const now = Date.now();
+  // update history (cap length)
+  const newHistory = (doc.history || []).slice(-399);
+  newHistory.push({ts: now, o,h,l,c});
+  await ref.update({ lastPrice: c, history: newHistory });
+  return {o,h,l,c,ts: now};
+}
+
+/* Global ticker: run every 1.5s and tick active symbols (persisted) */
+function startGlobalTicker(){
+  if(globalTicker) return;
+  globalTicker = setInterval(async () => {
+    const symbols = Array.from(activeSymbols);
+    if(symbols.length === 0) return;
+    const open = isMarketOpenIST();
+    // if market closed, we can lower volatility a bit
+    for(const s of symbols){
+      try{
+        // optionally skip some ticks for offline reduced updates
+        await tickSymbol(s);
+      }catch(e){ console.error('tick error', e); }
+    }
+  }, 1500);
+}
+startGlobalTicker();
+
+/* ---------------- Selecting a symbol (open its chart) ---------------- */
+async function selectSymbol(symbol){
+  selectedSymbol = symbol;
+  selectedSymbolEl.textContent = symbol;
+  symbolSub.textContent = 'Loading chart...';
+  await ensureSymbolDoc(symbol);
+  // mark active so global ticker will include it
+  activeSymbols.add(symbol);
+  // load history and draw candlesticks
+  const doc = await db.collection('symbols').doc(symbol).get();
+  const data = doc.exists ? doc.data() : null;
+  if(!data){ symbolSub.textContent = 'Failed to load'; return; }
+  // prepare data arrays
+  const history = data.history || [];
+  // set chart data
+  chart.data.datasets[0].data = history.map(h => ({x: h.ts, o: h.o, h: h.h, l: h.l, c: h.c}));
+  chart.data.datasets[1].data = history.map(h => ({x: h.ts, y: h.c}));
+  chart.update();
+  currentPrice = data.lastPrice;
+  lastPriceEl.textContent = 'Last: ' + formatINR(currentPrice);
+  symbolSub.textContent = (STOCKS.find(x=>x.s===symbol)?.n || 'Simulated') + ' • Simulated';
+  // clear any previous symbol reading interval
+  if(symbolTicker) clearInterval(symbolTicker);
+  symbolTicker = setInterval(async () => {
+    // read latest price doc and append last ohlc (latest)
+    const snap = await db.collection('symbols').doc(symbol).get();
+    if(!snap.exists) return;
+    const d = snap.data();
+    const last = d.lastPrice;
+    const hist = d.history || [];
+    const lastPoint = hist[hist.length-1];
+    if(lastPoint){
+      // append to chart if new timestamp
+      const lastTimestamp = chart.data.datasets[0].data.length ? chart.data.datasets[0].data[chart.data.datasets[0].data.length - 1].x : 0;
+      if(lastPoint.ts > lastTimestamp){
+        pushOHLC(lastPoint.ts, lastPoint.o, lastPoint.h, lastPoint.l, lastPoint.c);
+      }
+      currentPrice = last;
+      lastPriceEl.textContent = 'Last: ' + formatINR(currentPrice);
+    }
+    marketStatusEl.textContent = isMarketOpenIST() ? 'OPEN (NSE IST)' : 'CLOSED';
+  }, 1500);
+}
+
+/* Quick open by button */
+btnSearch.addEventListener('click', () => {
+  const s = searchInput.value.trim().toUpperCase();
+  if(!s) return alert('Type or choose a stock');
+  selectSymbol(s);
+});
+
+/* ---------------- WATCHLIST ---------------- */
+btnAddWatch.addEventListener('click', async () => {
+  if(!currentUser) return alert('Sign in to save watchlist');
+  const symbol = (selectedSymbol || searchInput.value).toUpperCase().trim();
+  if(!symbol) return alert('Pick a symbol first');
+  await db.collection('users').doc(currentUser.uid).collection('watchlist').doc(symbol).set({symbol, addedAt: firebase.firestore.FieldValue.serverTimestamp()});
+  renderWatchlist();
+});
+async function renderWatchlist(){
+  watchlistDiv.innerHTML = '';
+  if(!currentUser){ watchlistDiv.innerHTML = '<div class="muted small">Sign in to save watchlist</div>'; return;}
+  const snap = await db.collection('users').doc(currentUser.uid).collection('watchlist').orderBy('addedAt','desc').get();
+  if(snap.empty){ watchlistDiv.innerHTML = '<div class="muted small">Empty</div>'; return; }
+  snap.forEach(d => {
+    const sym = d.data().symbol;
+    const el = document.createElement('div'); el.className='watchlist-item';
+    el.innerHTML = `<div style="font-weight:700">${sym}</div><div style="display:flex;gap:6px"><button class="open">Open</button><button class="rem">×</button></div>`;
+    watchlistDiv.appendChild(el);
+    el.querySelector('.open').onclick = () => selectSymbol(sym);
+    el.querySelector('.rem').onclick = async () => { await db.collection('users').doc(currentUser.uid).collection('watchlist').doc(sym).delete(); renderWatchlist(); };
+  });
+}
+
+/* ---------------- TRADING: place order ---------------- */
+btnTrade.addEventListener('click', async () => {
+  if(!currentUser) return alert('Sign in to trade');
+  if(!selectedSymbol) return alert('Open a symbol first');
+  const qty = Number(tradeQty.value);
+  if(!qty || qty <= 0) return alert('Enter valid qty');
+  const type = tradeType.value;
+  const limit = tradePrice.value ? Number(tradePrice.value) : null;
+  // read current simulated last price
+  const symDoc = await db.collection('symbols').doc(selectedSymbol).get();
+  const last = symDoc.exists ? symDoc.data().lastPrice : null;
+  const priceToUse = limit || last;
+  if(!priceToUse) return alert('Price unknown');
+  const order = {
+    userId: currentUser.uid,
+    symbol: selectedSymbol,
+    type,
+    qty,
+    limitPrice: limit || null,
+    placedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    status: isMarketOpenIST() ? 'executed' : 'pending',
+    executedAt: isMarketOpenIST() ? firebase.firestore.FieldValue.serverTimestamp() : null,
+    executedPrice: isMarketOpenIST() ? priceToUse : null
+  };
+  // save order
+  const odRef = await db.collection('users').doc(currentUser.uid).collection('orders').add(order);
+  // apply immediate execution locally if executed
+  if(order.status === 'executed'){
+    try{ await applyExecutionLocal(currentUser.uid, odRef.id, order); }
+    catch(e){ alert('Execution failed: ' + e); console.error(e); }
+  }
+  alert('Order placed: ' + order.status);
+  renderOrders();
+  loadUserState();
+});
+
+/* process execution in Firestore transaction (local client method) */
+async function applyExecutionLocal(uid, orderId, order){
+  const userRef = db.collection('users').doc(uid);
+  const orderRef = db.collection('users').doc(uid).collection('orders').doc(orderId);
+  await db.runTransaction(async (tx) => {
+    const u = await tx.get(userRef);
+    if(!u.exists) throw 'user missing';
+    let balance = u.data().balance || 0;
+    const cost = (order.executedPrice || order.limitPrice) * order.qty;
+    if(order.type === 'buy'){
+      if(balance < cost) throw 'Insufficient balance';
+      balance -= cost;
+      const posRef = db.collection('users').doc(uid).collection('positions').doc(order.symbol);
+      const p = await tx.get(posRef);
+      if(p.exists){
+        const pd = p.data();
+        const newQty = (pd.qty || 0) + order.qty;
+        const newAvg = (((pd.avg || 0)*(pd.qty || 0)) + cost) / newQty;
+        tx.update(posRef, { qty: newQty, avg: newAvg });
+      } else {
+        tx.set(posRef, { qty: order.qty, avg: order.executedPrice || order.limitPrice });
+      }
+    } else {
+      const posRef = db.collection('users').doc(uid).collection('positions').doc(order.symbol);
+      const p = await tx.get(posRef);
+      const pd = p.exists ? p.data() : { qty: 0 };
+      if((pd.qty || 0) < order.qty) throw 'Not enough shares';
+      const newQty = (pd.qty || 0) - order.qty;
+      if(newQty === 0) tx.delete(posRef); else tx.update(posRef,{ qty: newQty });
+      balance += cost;
+    }
+    tx.update(userRef, { balance });
+    tx.update(orderRef, { status: 'executed', executedAt: firebase.firestore.FieldValue.serverTimestamp(), executedPrice: order.executedPrice });
+    tx.set(db.collection('users').doc(uid).collection('transactions').doc(), { orderId, symbol: order.symbol, type: order.type, qty: order.qty, price: order.executedPrice, at: firebase.firestore.FieldValue.serverTimestamp() });
+  });
+}
+
+/* ---------------- ORDERS & TRANSACTIONS RENDER ---------------- */
+async function renderOrders(){
+  if(!currentUser){ ordersList.innerHTML = '<div class="muted small">Sign in to view</div>'; return; }
+  const snap = await db.collection('users').doc(currentUser.uid).collection('orders').orderBy('placedAt','desc').limit(80).get();
+  if(snap.empty){ ordersList.innerHTML = '<div class="muted small">No orders</div>'; return; }
+  ordersList.innerHTML = '';
+  snap.forEach(d => {
+    const o = d.data();
+    const el = document.createElement('div');
+    el.style.padding='8px'; el.style.marginBottom='6px'; el.style.borderRadius='8px'; el.style.background='rgba(255,255,255,0.02)';
+    el.innerHTML = `<div style="display:flex;justify-content:space-between">
+      <div><strong>${o.symbol}</strong><div class="muted small">${o.qty} • ${o.type}</div></div>
+      <div style="text-align:right">${o.status}<div class="muted small">${o.executedPrice ? formatINR(o.executedPrice) : (o.limitPrice ? 'L:' + o.limitPrice : 'MKT')}</div></div>
+    </div>`;
+    ordersList.appendChild(el);
+  });
+}
+
+/* ---------------- ADMIN: run pending orders ---------------- */
+btnRunPending.addEventListener('click', runPendingOrders);
+btnListUsers.addEventListener('click', listUsersForAdmin);
+
+async function runPendingOrders(){
+  if(!currentUser) return alert('Sign in as admin to run pending');
+  const adm = await db.collection('admins').doc(currentUser.email).get();
+  if(!adm.exists) return alert('Only admins can run pending orders');
+  adminLog.textContent = 'Running pending orders...';
+  const usersSnap = await db.collection('users').get();
+  let processed = 0;
+  for(const u of usersSnap.docs){
+    const uid = u.id;
+    const pendSnap = await db.collection('users').doc(uid).collection('orders').where('status','==','pending').get();
+    for(const od of pendSnap.docs){
+      if(isMarketOpenIST()){
+        const o = od.data();
+        // get simulated current price
+        const symDoc = await db.collection('symbols').doc(o.symbol).get();
+        const price = symDoc.exists ? symDoc.data().lastPrice : null;
+        const execPrice = o.limitPrice || price;
+        if(!execPrice) continue;
+        // update and apply
+        await od.ref.update({ status:'executed', executedAt: firebase.firestore.FieldValue.serverTimestamp(), executedPrice: execPrice });
+        await applyExecutionServerSide(uid, od.id, o, execPrice);
+        processed++;
+      }
+    }
+  }
+  adminLog.textContent = `Processed ${processed} orders.`;
+  renderOrders();
+}
+
+async function applyExecutionServerSide(uid, orderDocId, order, execPrice){
+  const userRef = db.collection('users').doc(uid);
+  const orderRef = db.collection('users').doc(uid).collection('orders').doc(orderDocId);
+  await db.runTransaction(async (tx) => {
+    const u = await tx.get(userRef);
+    if(!u.exists) throw 'user not found';
+    let balance = (u.data().balance || 0);
+    const cost = execPrice * order.qty;
+    if(order.type === 'buy'){
+      if(balance < cost) throw 'Insufficient';
+      balance -= cost;
+      const posRef = db.collection('users').doc(uid).collection('positions').doc(order.symbol);
+      const ps = await tx.get(posRef);
+      if(ps.exists){
+        const p = ps.data();
+        const newQty = (p.qty || 0) + order.qty;
+        const newAvg = (((p.avg || 0)*(p.qty || 0)) + cost)/newQty;
+        tx.update(posRef, { qty: newQty, avg: newAvg });
+      } else {
+        tx.set(posRef, { qty: order.qty, avg: execPrice });
+      }
+    } else {
+      const posRef = db.collection('users').doc(uid).collection('positions').doc(order.symbol);
+      const ps = await tx.get(posRef);
+      const p = ps.exists ? ps.data() : { qty: 0 };
+      if((p.qty || 0) < order.qty) throw 'Not enough shares';
+      const newQty = (p.qty || 0) - order.qty;
+      if(newQty === 0) tx.delete(posRef); else tx.update(posRef, { qty: newQty });
+      balance += cost;
+    }
+    tx.update(userRef, { balance });
+    tx.set(db.collection('users').doc(uid).collection('transactions').doc(), { orderId: orderDocId, symbol: order.symbol, type: order.type, qty: order.qty, price: execPrice, at: firebase.firestore.FieldValue.serverTimestamp() });
+    tx.update(orderRef, { status:'executed', executedAt: firebase.firestore.FieldValue.serverTimestamp(), executedPrice: execPrice });
+  });
+}
+
+/* Admin user listing */
+async function listUsersForAdmin(){
+  adminUsersEl.innerHTML = 'Loading...';
+  const adm = await db.collection('admins').doc(currentUser.email).get();
+  if(!adm.exists) return adminUsersEl.innerHTML = 'Not an admin';
+  const usersSnap = await db.collection('users').get();
+  adminUsersEl.innerHTML = '';
+  for(const u of usersSnap.docs){
+    const d = u.data();
+    const div = document.createElement('div');
+    div.style.padding='8px'; div.style.borderRadius='6px'; div.style.marginBottom='6px'; div.style.background='rgba(255,255,255,0.02)';
+    div.innerHTML = `<div style="display:flex;justify-content:space-between">
+      <div><strong>${d.email || u.id}</strong><div class="muted small">Balance: ${formatINR(d.balance || 0)}</div></div>
+      <div><button class="admin-view" data-uid="${u.id}">View</button></div>
+    </div>`;
+    adminUsersEl.appendChild(div);
+  }
+  // view handler
+  adminUsersEl.querySelectorAll('.admin-view').forEach(b => {
+    b.onclick = async (e) => {
+      const uid = e.target.dataset.uid;
+      const orders = await db.collection('users').doc(uid).collection('orders').orderBy('placedAt','desc').limit(30).get();
+      let out = `<div style="max-height:300px;overflow:auto">`;
+      orders.forEach(o => {
+        const od = o.data();
+        out += `<div style="padding:6px;border-bottom:1px solid rgba(255,255,255,0.02)">${od.symbol} • ${od.type} • ${od.qty} • ${od.status} • ${od.executedPrice ? formatINR(od.executedPrice) : '-'}</div>`;
+      });
+      out += `</div>`;
+      adminLog.innerHTML = out;
+    };
+  });
+}
+
+/* ---------------- TOP snapshot (sample) ---------------- */
+btnRefreshGainers.addEventListener('click', async () => {
+  topGainersEl.textContent = 'Loading...';
+  const sample = ['RELIANCE','TCS','INFY','HDFCBANK','ICICIBANK','LT','HINDUNILVR','BHARTIARTL','ADANIENT','TATASTEEL'];
+  // ensure seed
+  for(const s of sample) await ensureSymbolDoc(s);
+  // fetch prices
+  const items = [];
+  for(const s of sample){
+    const doc = await db.collection('symbols').doc(s).get();
+    items.push({symbol: s, price: doc.exists ? doc.data().lastPrice : null});
+  }
+  topGainersEl.innerHTML = '';
+  items.forEach(it => {
+    const el = document.createElement('div');
+    el.style.padding='6px'; el.style.marginBottom='6px'; el.style.borderRadius='6px'; el.style.background='rgba(255,255,255,0.02)';
+    el.innerHTML = `<div style="display:flex;justify-content:space-between"><div>${it.symbol}</div><div>${it.price ? formatINR(it.price) : '—'}</div></div>`;
+    el.onclick = () => selectSymbol(it.symbol);
+    topGainersEl.appendChild(el);
+  });
+});
+
+/* ---------------- AUTH flow ---------------- */
+btnSignin.addEventListener('click', async () => {
+  if(!currentUser){
+    try{
+      await auth.signInWithEmailAndPassword(ADMIN_EMAIL, ADMIN_PASSWORD);
+    }catch(err){
+      if(err.code === 'auth/user-not-found'){
+        try{
+          await auth.createUserWithEmailAndPassword(ADMIN_EMAIL, ADMIN_PASSWORD);
+          // add admins doc
+          await db.collection('admins').doc(ADMIN_EMAIL).set({ role:'admin', createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+          alert('Admin created & signed in.');
+        }catch(e){ alert('Create admin failed: ' + e.message); }
+      } else {
+        const email = prompt('Email: (or cancel)', '');
+        if(!email) return;
+        const pwd = prompt('Password:', COMMON_PASSWORD);
+        if(!pwd) return;
+        try{
+          await auth.signInWithEmailAndPassword(email, pwd);
+        }catch(e){
+          if(e.code === 'auth/user-not-found'){
+            try{ await auth.createUserWithEmailAndPassword(email, pwd); alert('User created & signed in.'); } catch(ee){ alert('Create user failed: ' + ee.message); }
+          } else alert('Sign in failed: ' + e.message);
+        }
+      }
+    }
+  } else {
+    await auth.signOut();
+  }
+});
+
+auth.onAuthStateChanged(async (user) => {
+  currentUser = user;
+  if(user){
+    userInfo.textContent = user.email;
+    btnSignin.textContent = 'Sign out';
+    await ensureUserDoc(user.uid,user.email);
+    await refreshUserUI();
+    await checkAdminAndShow(user.email);
+  } else {
+    userInfo.textContent = 'Not signed in';
+    btnSignin.textContent = 'Sign In';
+    adminTools.classList.add('hidden');
+    adminBadge.classList.add('hidden');
+    selectedSymbol = null;
+    selectedSymbolEl.textContent = '—';
+    symbolSub.textContent = 'Search a stock (e.g. RELIANCE)';
+    if(symbolTicker) clearInterval(symbolTicker);
+  }
+});
+
+async function ensureUserDoc(uid,email){
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
+  if(!snap.exists) await ref.set({ balance: 100000, email: email || null, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+}
+
+async function checkAdminAndShow(email){
+  const doc = await db.collection('admins').doc(email).get();
+  if(doc.exists){ adminTools.classList.remove('hidden'); adminBadge.classList.remove('hidden'); } else { adminTools.classList.add('hidden'); adminBadge.classList.add('hidden'); }
+}
+
+/* refresh user related UI */
+async function refreshUserUI(){
+  if(!currentUser) return;
+  const udoc = await db.collection('users').doc(currentUser.uid).get();
+  cashBalanceEl.textContent = formatINR((udoc.data()||{}).balance || 0);
+  renderWatchlist();
+  renderOrders();
+}
+
+/* render orders (user) */
+async function renderOrders(){
+  if(!currentUser){ ordersList.innerHTML = '<div class="muted small">Sign in to view</div>'; return; }
+  const snap = await db.collection('users').doc(currentUser.uid).collection('orders').orderBy('placedAt','desc').limit(80).get();
+  ordersList.innerHTML = '';
+  if(snap.empty){ ordersList.innerHTML = '<div class="muted small">No orders</div>'; return; }
+  snap.forEach(d => {
+    const o = d.data();
+    const el = document.createElement('div'); el.style.padding='8px'; el.style.marginBottom='6px'; el.style.borderRadius='8px'; el.style.background='rgba(255,255,255,0.02)';
+    el.innerHTML = `<div style="display:flex;justify-content:space-between">
+      <div><strong>${o.symbol}</strong><div class="muted small">${o.qty} • ${o.type}</div></div>
+      <div style="text-align:right">${o.status}<div class="muted small">${o.executedPrice ? formatINR(o.executedPrice) : (o.limitPrice ? 'L:' + o.limitPrice : 'MKT')}</div></div>
+    </div>`;
+    ordersList.appendChild(el);
+  });
+}
+
+/* ---------------- UTIL / INIT ---------------- */
+/* start by seeding a few popular symbols for quick demo */
+(async function init(){
+  await ensureSymbolDoc('RELIANCE');
+  await ensureSymbolDoc('TCS');
+  await ensureSymbolDoc('INFY');
+  await ensureSymbolDoc('HDFCBANK');
+  await ensureSymbolDoc('ICICIBANK');
+  await ensureSymbolDoc('LT');
+  // initial top snapshot
+  btnRefreshGainers.click();
+  // refresh user UI when logged in periodically
+  setInterval(() => { if(currentUser) refreshUserUI(); }, 10000);
+})();
+
+/* Expose helper for console debugging */
+window.VSE = {
+  selectSymbol, ensureSymbolDoc, activeSymbols
+};
+</script>
+</body>
+</html>
